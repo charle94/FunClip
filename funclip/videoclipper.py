@@ -17,7 +17,7 @@ import moviepy.editor as mpy
 from moviepy.video.tools.subtitles import SubtitlesClip, TextClip
 from moviepy.editor import VideoFileClip, concatenate_videoclips
 from moviepy.video.compositing.CompositeVideoClip import CompositeVideoClip
-from utils.subtitle_utils import generate_srt, generate_srt_clip
+from utils.subtitle_utils import generate_srt, generate_srt_clip, parse_srt
 from utils.argparse_tools import ArgumentParser, get_commandline_args
 from utils.trans_utils import pre_proc, proc, write_state, load_state, proc_spk, convert_pcm_to_float
 
@@ -170,6 +170,75 @@ class VideoClipper():
         # res_text, res_srt = self.recog((16000, wav), state)
         return self.recog((16000, wav), sd_switch, state, hotwords, output_dir)
 
+    def video_recog_from_srt(self, video_filename, srt_text_or_path, output_dir=None):
+        """Build a clipping state from a user-provided SRT file, skipping ASR.
+
+        ``srt_text_or_path`` may be either the raw SRT contents or a path to
+        an ``.srt`` file. Returns ``(res_text, normalized_srt, state)`` with
+        the same shape as :meth:`video_recog` so the gradio UI and AI clip
+        flow can be reused unchanged.
+        """
+        # Load SRT contents. Only treat the input as a path when it looks
+        # like one (no newlines, reasonable length) so that SRT text pasted
+        # directly does not trip filesystem APIs with invalid characters.
+        srt_text = srt_text_or_path
+        is_pathlike = (
+            isinstance(srt_text_or_path, str)
+            and srt_text_or_path
+            and '\n' not in srt_text_or_path
+            and '\r' not in srt_text_or_path
+            and len(srt_text_or_path) < 4096
+        )
+        if is_pathlike:
+            try:
+                if os.path.isfile(srt_text_or_path):
+                    with open(srt_text_or_path, 'rb') as f:
+                        raw = f.read()
+                    for enc in ('utf-8-sig', 'utf-8', 'gbk', 'gb18030', 'latin-1'):
+                        try:
+                            srt_text = raw.decode(enc)
+                            break
+                        except UnicodeDecodeError:
+                            continue
+            except (OSError, ValueError):
+                # Fall back to treating the input as raw SRT text.
+                srt_text = srt_text_or_path
+        if not srt_text or not srt_text.strip():
+            raise ValueError("Empty SRT input.")
+
+        sentences, normalized_srt = parse_srt(srt_text)
+        if not sentences:
+            raise ValueError("No valid SRT cues parsed from the input.")
+
+        video = mpy.VideoFileClip(video_filename)
+        if output_dir is not None:
+            os.makedirs(output_dir, exist_ok=True)
+            _, base_name = os.path.split(video_filename)
+            base_name, _ = os.path.splitext(base_name)
+            clip_video_file = os.path.join(output_dir, base_name + '_clip.mp4')
+        else:
+            base_name, _ = os.path.splitext(video_filename)
+            clip_video_file = base_name + '_clip.mp4'
+
+        # Build placeholder fields so that downstream code that reads them
+        # (without using them in the timestamp_list path) does not raise
+        # KeyError. ``recog_res_raw`` / ``timestamp`` are only used by the
+        # text-matching clip path, which is not exercised when the LLM
+        # supplies explicit timestamps.
+        recog_res_raw = ''.join(s['raw_text'] for s in sentences)
+        timestamp = [s['timestamp'][0] for s in sentences]
+
+        state = {
+            'video_filename': video_filename,
+            'clip_video_file': clip_video_file,
+            'video': video,
+            'recog_res_raw': recog_res_raw,
+            'timestamp': timestamp,
+            'sentences': sentences,
+        }
+        res_text = ' '.join(s['raw_text'] for s in sentences)
+        return res_text, normalized_srt, state
+
     def video_clip(self, 
                    dest_text, 
                    start_ost, 
@@ -291,8 +360,9 @@ def get_parser():
     parser.add_argument(
         "--stage",
         type=int,
-        choices=(1, 2),
-        help="Stage, 0 for recognizing and 1 for clipping",
+        choices=(1, 2, 3),
+        help="Stage: 1 for ASR (recognition), 2 for text/speaker-based clipping after stage 1, "
+             "3 for SRT-driven LLM clipping (skips ASR, uses --srt_input + --llm_model)",
         required=True
     )
     parser.add_argument(
@@ -351,10 +421,36 @@ def get_parser():
         default='zh',
         help="language"
     )
+    parser.add_argument(
+        "--srt_input",
+        type=str,
+        default=None,
+        help="Path to a user-provided SRT file (used by stage 3)",
+    )
+    parser.add_argument(
+        "--llm_model",
+        type=str,
+        default=None,
+        help="LLM model name for stage 3 (e.g. qwen-plus, deepseek-chat, gpt-4-turbo, g4f-gpt-3.5-turbo)",
+    )
+    parser.add_argument(
+        "--apikey",
+        type=str,
+        default=None,
+        help="API key for the chosen LLM (not required for g4f-* models)",
+    )
+    parser.add_argument(
+        "--prompt_mode",
+        type=str,
+        choices=("general", "short_video"),
+        default="short_video",
+        help="LLM prompt mode for stage 3",
+    )
     return parser
 
 
-def runner(stage, file, sd_switch, output_dir, dest_text, dest_spk, start_ost, end_ost, output_file, config=None, lang='zh'):
+def runner(stage, file, sd_switch, output_dir, dest_text, dest_spk, start_ost, end_ost, output_file, config=None, lang='zh',
+           srt_input=None, llm_model=None, apikey=None, prompt_mode='short_video'):
     audio_suffixs = ['.wav','.mp3','.aac','.m4a','.flac']
     video_suffixs = ['.mp4','.avi','.mkv','.flv','.mov','.webm','.ts','.mpeg']
     _,ext = os.path.splitext(file)
@@ -435,6 +531,79 @@ def runner(stage, file, sd_switch, output_dir, dest_text, dest_spk, start_ost, e
             with open(clip_srt_file, 'w') as fout:
                 fout.write(srt_clip)
                 logging.warning("Write clipped subtitle to {}".format(clip_srt_file))
+    if stage == 3:
+        _run_stage3(file, mode, srt_input, output_dir, output_file,
+                    llm_model, apikey, prompt_mode, start_ost, end_ost)
+
+
+def _run_llm_for_clip(model, apikey, system_content, user_content, srt_text):
+    from llm.openai_api import openai_call
+    from llm.qwen_api import call_qwen_model
+    from llm.g4f_openai_api import g4f_openai_call
+    if model is None:
+        raise ValueError("--llm_model is required for stage 3")
+    if model.startswith('qwen'):
+        return call_qwen_model(apikey, model, user_content + '\n' + srt_text, system_content)
+    if model.startswith('gpt') or model.startswith('moonshot') or model.startswith('deepseek'):
+        return openai_call(apikey, model, system_content, user_content + '\n' + srt_text)
+    if model.startswith('g4f'):
+        return g4f_openai_call("-".join(model.split('-')[1:]), system_content, user_content + '\n' + srt_text)
+    raise ValueError("Unsupported LLM model prefix: {}".format(model))
+
+
+def _run_stage3(file, mode, srt_input, output_dir, output_file, llm_model, apikey, prompt_mode, start_ost, end_ost):
+    from llm.demo_prompt import short_video_prompt_system, short_video_prompt_user
+    from utils.trans_utils import extract_timestamps
+
+    if mode != 'video':
+        logging.error("Stage 3 currently only supports video input.")
+        sys.exit(1)
+    if not srt_input:
+        logging.error("Stage 3 requires --srt_input <path-to-srt>.")
+        sys.exit(1)
+
+    audio_clipper = VideoClipper(None)
+    res_text, res_srt, state = audio_clipper.video_recog_from_srt(file, srt_input, output_dir=output_dir)
+    if output_file is not None:
+        state['clip_video_file'] = output_file
+
+    total_srt_file = os.path.join(output_dir, 'total.srt')
+    with open(total_srt_file, 'w') as fout:
+        fout.write(res_srt)
+        logging.warning("Write normalized subtitle to {}".format(total_srt_file))
+
+    if prompt_mode == 'short_video':
+        system_content = short_video_prompt_system
+        user_content = short_video_prompt_user
+    else:
+        system_content = ("你是一个视频srt字幕分析剪辑器，输入视频的srt字幕，"
+                "分析其中的精彩且尽可能连续的片段并裁剪出来，输出四条以内的片段，"
+                "将片段中在时间上连续的多个句子及它们的时间戳合并为一条，"
+                "注意确保文字与时间戳的正确匹配。输出需严格按照如下格式："
+                "1. [开始时间-结束时间] 文本，注意其中的连接符是\"-\"")
+        user_content = "这是待裁剪的视频srt字幕："
+
+    logging.warning("Calling LLM ({}) with prompt mode '{}'...".format(llm_model, prompt_mode))
+    llm_result = _run_llm_for_clip(llm_model, apikey, system_content, user_content, res_srt)
+    logging.warning("LLM result:\n{}".format(llm_result))
+
+    llm_log_file = os.path.join(output_dir, 'llm_result.txt')
+    with open(llm_log_file, 'w') as fout:
+        fout.write(llm_result or '')
+
+    timestamp_list = extract_timestamps(llm_result or '')
+    if not timestamp_list:
+        logging.error("No timestamps extracted from LLM result. Aborting clipping.")
+        sys.exit(1)
+
+    clip_video_file, message, srt_clip = audio_clipper.video_clip(
+        '', start_ost, end_ost, state, timestamp_list=timestamp_list)
+    logging.warning("Clipping Log: {}".format(message))
+    logging.warning("Save clipped mp4 file to {}".format(clip_video_file))
+    clip_srt_file = clip_video_file[:-3] + 'srt'
+    with open(clip_srt_file, 'w') as fout:
+        fout.write(srt_clip)
+        logging.warning("Write clipped subtitle to {}".format(clip_srt_file))
 
 
 def main(cmd=None):

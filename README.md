@@ -40,6 +40,28 @@
   2. Click on the 'LLM Inference' button, and FunClip will automatically combine two prompts with the video's srt subtitles;
   3. Click on the 'AI Clip' button, and based on the output results of the large language model from the previous step, FunClip will extract the timestamps for clipping;
   4. You can try changing the prompt to leverage the capabilities of the large language models to get the results you want;
+
+### 📄 Use your own SRT + Short-video narrative clipping
+
+If you already have an SRT subtitle file (e.g. from other tools or manual proofreading), you can skip ASR entirely and let an LLM cut the video using short-video narrative structure (hook / setup / rising / turn / climax / closing):
+
+1. Upload the video on the left side of the UI, expand the "📄 Use external SRT" panel, upload a `.srt` file or paste SRT text, then click "Load From SRT";
+2. In the "🧠 LLM Clipping" panel on the right, switch the "Prompt Mode" to "Short Video"; the model will identify plot, climax and turning points and output time ranges that FunClip can parse automatically;
+3. Click "LLM Inference" and then "AI Clip" as usual to obtain the clipped video and the corresponding clipped SRT.
+
+The CLI also supports the full pipeline:
+
+```bash
+python funclip/videoclipper.py --stage 3 \
+    --file path/to/video.mp4 \
+    --srt_input path/to/subtitles.srt \
+    --llm_model deepseek-chat --apikey <your-key> \
+    --prompt_mode short_video \
+    --output_dir ./output
+```
+
+> Tip: very long subtitles are best handled by long-context models; you can still use the `Start/End Offset` sliders in the UI to fine-tune clip boundaries.
+
 - 2024/05/09 FunClip updated to v1.1.0, including the following updates and fixes:
   - Support configuration of output file directory, saving ASR intermediate results and video clipping intermediate files;
   - UI upgrade (see guide picture below), video and audio cropping function are on the same page now, button position adjustment;
