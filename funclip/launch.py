@@ -14,6 +14,11 @@ from llm.openai_api import openai_call
 from llm.qwen_api import call_qwen_model
 from llm.g4f_openai_api import g4f_openai_call
 from llm.demo_prompt import short_video_prompt_system, short_video_prompt_user
+from llm.hierarchical import (
+    hierarchical_llm_inference,
+    REDUCE_SYSTEM_PROMPT as hierarchical_system_prompt,
+    REDUCE_USER_PROMPT as hierarchical_user_prompt,
+)
 from utils.trans_utils import extract_timestamps
 from introduction import top_md_1, top_md_3, top_md_4
 
@@ -146,6 +151,11 @@ if __name__ == "__main__":
         """Return (system_prompt, user_prompt) for the chosen prompt mode."""
         if mode == 'short_video':
             return short_video_prompt_system, short_video_prompt_user
+        if mode == 'hierarchical':
+            # The Reduce-stage prompt is what the user-visible textbox should
+            # show, because for short inputs the orchestrator falls back to a
+            # single-shot call using exactly this prompt pair.
+            return hierarchical_system_prompt, hierarchical_user_prompt
         # general / default mode keeps the previous wording.
         general_system = ("你是一个视频srt字幕分析剪辑器，输入视频的srt字幕，"
                 "分析其中的精彩且尽可能连续的片段并裁剪出来，输出四条以内的片段，将片段中在时间上连续的多个句子及它们的时间戳合并为一条，"
@@ -165,6 +175,26 @@ if __name__ == "__main__":
         else:
             logging.error("LLM name error, only {} are supported as LLM name prefix."
                           .format(SUPPORT_LLM_PREFIX))
+
+    def llm_dispatch(prompt_mode, system_content, user_content, srt_text, model, apikey):
+        """Route LLM inference based on the selected prompt mode.
+
+        For ``hierarchical`` mode, run a Map-Reduce analysis over the SRT
+        (chunk → per-chunk narrative cards → global climax selection). The
+        single-shot ``llm_inference`` is reused as the inner LLM caller so
+        all existing model providers and credentials work unchanged.
+        For other modes, behaviour is identical to ``llm_inference``.
+        """
+        if prompt_mode == 'hierarchical':
+            return hierarchical_llm_inference(
+                srt_text=srt_text,
+                model=model,
+                apikey=apikey,
+                llm_caller=llm_inference,
+                reduce_system_prompt=system_content,
+                reduce_user_prompt=user_content,
+            )
+        return llm_inference(system_content, user_content, srt_text, model, apikey)
     
     def AI_clip(LLM_res, dest_text, video_spk_input, start_ost, end_ost, video_state, audio_state, output_dir):
         timestamp_list = extract_timestamps(LLM_res)
@@ -248,9 +278,10 @@ if __name__ == "__main__":
                     with gr.Column():
                         prompt_mode = gr.Radio(
                             choices=[("通用挑选 | General", "general"),
-                                     ("短视频叙事 | Short Video", "short_video")],
+                                     ("短视频叙事 | Short Video", "short_video"),
+                                     ("分层叙事(长视频) | Hierarchical", "hierarchical")],
                             value="general",
-                            label="📐 Prompt 模式 | Prompt Mode (短视频模式按情节/高潮/转折切分)")
+                            label="📐 Prompt 模式 | Prompt Mode (短视频模式按情节/高潮/转折切分；分层模式适合超长字幕)")
                         prompt_head = gr.Textbox(label="Prompt System (按需更改，最好不要变动主体和要求)", value=("你是一个视频srt字幕分析剪辑器，输入视频的srt字幕，"
                                 "分析其中的精彩且尽可能连续的片段并裁剪出来，输出四条以内的片段，将片段中在时间上连续的多个句子及它们的时间戳合并为一条，"
                                 "注意确保文字与时间戳的正确匹配。输出需严格按照如下格式：1. [开始时间-结束时间] 文本，注意其中的连接符是“-”"))
@@ -337,8 +368,8 @@ if __name__ == "__main__":
                                    font_color,
                                    ], 
                            outputs=[video_output, clip_message, srt_clipped])
-        llm_button.click(llm_inference,
-                         inputs=[prompt_head, prompt_head2, video_srt_output, llm_model, apikey_input],
+        llm_button.click(llm_dispatch,
+                         inputs=[prompt_mode, prompt_head, prompt_head2, video_srt_output, llm_model, apikey_input],
                          outputs=[llm_result])
         llm_clip_button.click(AI_clip, 
                            inputs=[llm_result,
