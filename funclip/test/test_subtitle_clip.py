@@ -326,7 +326,5 @@ class FormatCardsForReduceTests(unittest.TestCase):
         self.assertIn('B', text)
 
 
-import re  # noqa: E402  -- duplicate-safe; kept above for type-checker friendliness.
-
 if __name__ == '__main__':
     unittest.main()
