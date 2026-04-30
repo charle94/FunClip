@@ -62,6 +62,36 @@ python funclip/videoclipper.py --stage 3 \
 
 > Tip: very long subtitles are best handled by long-context models; you can still use the `Start/End Offset` sliders in the UI to fine-tune clip boundaries.
 
+### 🧠 Hierarchical mode (recommended for long videos)
+
+For videos longer than ~30 minutes where the SRT has hundreds of cues, a single LLM call tends to miss the middle climax due to attention dilution. FunClip adds a **Hierarchical** prompt mode using a two-pass Map-Reduce architecture:
+
+- **Map**: split the SRT into overlapping chunks (default: 50 cues, 8-cue overlap) and send each chunk to the LLM independently (in parallel). Each call produces a compact "narrative card" — `{range, role, intensity, summary}`.
+- **Reduce**: aggregate all cards into a short "plot map" and ask the LLM to select the 3-8 best segments from a global perspective.
+
+Usage is identical to the other modes, just change `--prompt_mode`:
+
+```bash
+python funclip/videoclipper.py --stage 3 \
+    --file path/to/video.mp4 \
+    --srt_input path/to/subtitles.srt \
+    --llm_model deepseek-chat --apikey <your-key> \
+    --prompt_mode hierarchical \
+    --output_dir ./output
+```
+
+In the Gradio UI, switch the "📐 Prompt Mode" radio to "分层叙事(长视频) | Hierarchical".
+
+To see the pipeline in action without an API key, run the bundled demo script:
+
+```bash
+python examples/hierarchical_demo.py
+# Show map-stage narrative cards
+python examples/hierarchical_demo.py --show-cards
+# Use a real LLM (DeepSeek example)
+python examples/hierarchical_demo.py --model deepseek-chat --apikey <your-key>
+```
+
 - 2024/05/09 FunClip updated to v1.1.0, including the following updates and fixes:
   - Support configuration of output file directory, saving ASR intermediate results and video clipping intermediate files;
   - UI upgrade (see guide picture below), video and audio cropping function are on the same page now, button position adjustment;

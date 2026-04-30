@@ -64,6 +64,36 @@ python funclip/videoclipper.py --stage 3 \
 
 > 提示：超长字幕建议使用具备长上下文的模型；若希望微调剪辑边界，可继续使用界面上的 `开始位置偏移` / `结束位置偏移` 滑块。
 
+### 🧠 分层叙事模式（超长字幕推荐）
+
+对于时长超过 30 分钟、字幕条数超过 500 条的长视频，单次 LLM 调用往往因注意力稀释而遗漏高潮片段。FunClip 新增 **分层叙事 | Hierarchical** 模式，采用两阶段 Map-Reduce 架构：
+
+- **Map 阶段**：将 SRT 切分为若干重叠的字幕块（默认每块 50 条，重叠 8 条），并行向 LLM 发送每个块，获取一张紧凑的「叙事摘要卡」（时间范围、叙事角色、情绪强度、内容摘要）。
+- **Reduce 阶段**：将所有摘要卡汇聚成一份简洁的情节地图，再由 LLM 按整体视角选出 3-8 个最佳片段。
+
+使用方式与其他模式完全一致，只需将 `--prompt_mode` 改为 `hierarchical`：
+
+```bash
+python funclip/videoclipper.py --stage 3 \
+    --file path/to/video.mp4 \
+    --srt_input path/to/subtitles.srt \
+    --llm_model deepseek-chat --apikey <your-key> \
+    --prompt_mode hierarchical \
+    --output_dir ./output
+```
+
+或在 Gradio 界面中将「📐 Prompt 模式」切换为「分层叙事(长视频) | Hierarchical」即可。
+
+想要快速了解该流程的运作方式，可运行无需 API Key 的演示脚本：
+
+```bash
+python examples/hierarchical_demo.py
+# 显示 Map 阶段叙事摘要卡
+python examples/hierarchical_demo.py --show-cards
+# 使用真实 LLM（以 DeepSeek 为例）
+python examples/hierarchical_demo.py --model deepseek-chat --apikey <your-key>
+```
+
 - 2024/05/09 FunClip更新至v1.1.0，包含如下更新与修复：
   - 支持配置输出文件目录，保存ASR中间结果与视频裁剪中间文件；
   - UI升级（见下方演示图例），视频与音频裁剪功能在同一页，按钮位置调整；

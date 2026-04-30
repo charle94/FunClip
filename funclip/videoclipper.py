@@ -442,9 +442,11 @@ def get_parser():
     parser.add_argument(
         "--prompt_mode",
         type=str,
-        choices=("general", "short_video"),
+        choices=("general", "short_video", "hierarchical"),
         default="short_video",
-        help="LLM prompt mode for stage 3",
+        help="LLM prompt mode for stage 3: 'general' (simple), "
+             "'short_video' (narrative structure), "
+             "'hierarchical' (map-reduce for long subtitles)",
     )
     return parser
 
@@ -572,19 +574,38 @@ def _run_stage3(file, mode, srt_input, output_dir, output_file, llm_model, apike
         fout.write(res_srt)
         logging.warning("Write normalized subtitle to {}".format(total_srt_file))
 
-    if prompt_mode == 'short_video':
-        system_content = short_video_prompt_system
-        user_content = short_video_prompt_user
-    else:
-        system_content = ("你是一个视频srt字幕分析剪辑器，输入视频的srt字幕，"
-                "分析其中的精彩且尽可能连续的片段并裁剪出来，输出四条以内的片段，"
-                "将片段中在时间上连续的多个句子及它们的时间戳合并为一条，"
-                "注意确保文字与时间戳的正确匹配。输出需严格按照如下格式："
-                "1. [开始时间-结束时间] 文本，注意其中的连接符是\"-\"")
-        user_content = "这是待裁剪的视频srt字幕："
-
     logging.warning("Calling LLM ({}) with prompt mode '{}'...".format(llm_model, prompt_mode))
-    llm_result = _run_llm_for_clip(llm_model, apikey, system_content, user_content, res_srt)
+
+    if prompt_mode == 'hierarchical':
+        from llm.hierarchical import (
+            hierarchical_llm_inference,
+            REDUCE_SYSTEM_PROMPT,
+            REDUCE_USER_PROMPT,
+        )
+        # hierarchical_llm_inference expects llm_caller(system, user, srt, model, apikey)
+        # while _run_llm_for_clip has signature (model, apikey, system, user, srt).
+        def _hierarchical_caller(system, user, srt, model, apikey):
+            return _run_llm_for_clip(model, apikey, system, user, srt)
+        llm_result = hierarchical_llm_inference(
+            srt_text=res_srt,
+            model=llm_model,
+            apikey=apikey,
+            llm_caller=_hierarchical_caller,
+            reduce_system_prompt=REDUCE_SYSTEM_PROMPT,
+            reduce_user_prompt=REDUCE_USER_PROMPT,
+        )
+    else:
+        if prompt_mode == 'short_video':
+            system_content = short_video_prompt_system
+            user_content = short_video_prompt_user
+        else:
+            system_content = ("你是一个视频srt字幕分析剪辑器，输入视频的srt字幕，"
+                    "分析其中的精彩且尽可能连续的片段并裁剪出来，输出四条以内的片段，"
+                    "将片段中在时间上连续的多个句子及它们的时间戳合并为一条，"
+                    "注意确保文字与时间戳的正确匹配。输出需严格按照如下格式："
+                    "1. [开始时间-结束时间] 文本，注意其中的连接符是\"-\"")
+            user_content = "这是待裁剪的视频srt字幕："
+        llm_result = _run_llm_for_clip(llm_model, apikey, system_content, user_content, res_srt)
     logging.warning("LLM result:\n{}".format(llm_result))
 
     llm_log_file = os.path.join(output_dir, 'llm_result.txt')
