@@ -528,9 +528,9 @@ def main():
     )
     args = parser.parse_args()
 
-    if args.model and not args.apikey:
+    if args.model and not args.apikey and not args.model.startswith("g4f"):
         parser.error("--apikey is required when --model is specified "
-                     "(unless using a g4f-* model).")
+                     "(g4f-* models do not need an API key).")
 
     run_demo(
         model=args.model,

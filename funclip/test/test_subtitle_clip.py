@@ -168,8 +168,8 @@ class HierarchicalChunkingTests(unittest.TestCase):
         # overlap >= window must not produce a zero / negative step.
         sentences, _ = parse_srt(_make_srt(20))
         chunks = chunk_sentences(sentences, window=5, overlap=10)
-        # step is clamped to 1 (window-1=4 actually; effective overlap=4),
-        # so we make progress and cover all cues.
+        # overlap is clamped to window-1=4, so step = window-overlap = 5-4 = 1;
+        # we still make progress and cover all cues.
         self.assertGreater(len(chunks), 1)
         covered = set()
         for c in chunks:
