@@ -42,6 +42,58 @@
   2. 点击'LLM智能段落选择'按钮，FunClip将自动组合两个prompt与视频的srt字幕；
   3. 点击'LLM智能裁剪'按钮，基于前一步的大语言模型输出结果，FunClip将提取其中的时间戳进行裁剪；
   4. 您可以尝试改变prompt来借助大语言模型的能力来获取您想要的结果；
+
+### 📄 使用自带字幕 + 短视频叙事剪辑
+
+如果你已经有 SRT 字幕（例如来自其他工具或人工校对），可以跳过 ASR，直接交给大模型按短视频思路切分，再由 FunClip 自动剪辑视频：
+
+1. 在主界面左侧上传视频，并展开「📄 使用自带字幕 | Use external SRT」面板，上传 `.srt` 文件或粘贴 SRT 文本，点击「📄 使用字幕加载」；
+2. 在右侧「🧠 LLM 智能裁剪」中将「📐 Prompt 模式」切换为「短视频叙事 | Short Video」，模型会按 开场钩子 / 起 / 承 / 转 / 高潮 / 收尾 的结构识别情节、高潮和转折，并输出可被自动解析的时间段；
+3. 像普通流程一样依次点击「LLM 推理」与「🧠 LLM 智能裁剪」即可得到剪辑视频与对应的裁剪后 SRT。
+
+命令行也支持端到端跑通该流程：
+
+```bash
+python funclip/videoclipper.py --stage 3 \
+    --file path/to/video.mp4 \
+    --srt_input path/to/subtitles.srt \
+    --llm_model deepseek-chat --apikey <your-key> \
+    --prompt_mode short_video \
+    --output_dir ./output
+```
+
+> 提示：超长字幕建议使用具备长上下文的模型；若希望微调剪辑边界，可继续使用界面上的 `开始位置偏移` / `结束位置偏移` 滑块。
+
+### 🧠 分层叙事模式（超长字幕推荐）
+
+对于时长超过 30 分钟、字幕条数超过 500 条的长视频，单次 LLM 调用往往因注意力稀释而遗漏高潮片段。FunClip 新增 **分层叙事 | Hierarchical** 模式，采用两阶段 Map-Reduce 架构：
+
+- **Map 阶段**：将 SRT 切分为若干重叠的字幕块（默认每块 50 条，重叠 8 条），并行向 LLM 发送每个块，获取一张紧凑的「叙事摘要卡」（时间范围、叙事角色、情绪强度、内容摘要）。
+- **Reduce 阶段**：将所有摘要卡汇聚成一份简洁的情节地图，再由 LLM 按整体视角选出 3-8 个最佳片段。
+
+使用方式与其他模式完全一致，只需将 `--prompt_mode` 改为 `hierarchical`：
+
+```bash
+python funclip/videoclipper.py --stage 3 \
+    --file path/to/video.mp4 \
+    --srt_input path/to/subtitles.srt \
+    --llm_model deepseek-chat --apikey <your-key> \
+    --prompt_mode hierarchical \
+    --output_dir ./output
+```
+
+或在 Gradio 界面中将「📐 Prompt 模式」切换为「分层叙事(长视频) | Hierarchical」即可。
+
+想要快速了解该流程的运作方式，可运行无需 API Key 的演示脚本：
+
+```bash
+python examples/hierarchical_demo.py
+# 显示 Map 阶段叙事摘要卡
+python examples/hierarchical_demo.py --show-cards
+# 使用真实 LLM（以 DeepSeek 为例）
+python examples/hierarchical_demo.py --model deepseek-chat --apikey <your-key>
+```
+
 - 2024/05/09 FunClip更新至v1.1.0，包含如下更新与修复：
   - 支持配置输出文件目录，保存ASR中间结果与视频裁剪中间文件；
   - UI升级（见下方演示图例），视频与音频裁剪功能在同一页，按钮位置调整；

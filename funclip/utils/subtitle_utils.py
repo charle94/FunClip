@@ -128,3 +128,97 @@ def generate_srt_clip(sentence_list, start, end, begin_index=0, time_acc_ost=0.0
                 cc += 1
             continue
     return srt_total, subs, cc
+
+
+def _srt_time_to_ms(t):
+    """Convert an SRT timestamp string (HH:MM:SS,mmm or HH:MM:SS.mmm) to milliseconds.
+
+    Tolerant of variants seen in the wild:
+      * ``,`` or ``.`` as the millisecond separator.
+      * ``H:MM:SS,mmm`` (single digit hour).
+      * 1-3 digit milliseconds (left padded to 3).
+    """
+    t = t.strip().replace('.', ',')
+    m = re.match(r'^(\d{1,2}):(\d{2}):(\d{2})[,:](\d{1,3})$', t)
+    if not m:
+        raise ValueError("Invalid SRT timestamp: {}".format(t))
+    h, mi, s, ms = m.groups()
+    # SRT milliseconds are zero-padded on the LEFT (",5" means 5ms, ",50"
+    # means 50ms, ",500" means 500ms). The same convention is produced by
+    # ``time_convert`` (``zfill(3)``) above.
+    ms = ms.zfill(3)
+    return ((int(h) * 60 + int(mi)) * 60 + int(s)) * 1000 + int(ms)
+
+
+def parse_srt(srt_text):
+    """Parse an SRT subtitle string.
+
+    Returns a tuple ``(sentences, normalized_srt)`` where:
+
+    * ``sentences`` is a list of dicts compatible with ``generate_srt_clip``,
+      each having keys ``text`` (list with a single string token), ``timestamp``
+      (``[[start_ms, end_ms]]``), ``start`` (ms), ``end`` (ms) and
+      ``raw_text`` (joined original text for the cue).
+    * ``normalized_srt`` is a re-rendered SRT string with sequential indices
+      starting from 0 and ``HH:MM:SS,mmm`` timestamps, matching the format
+      expected by the LLM prompts in :mod:`funclip.llm.demo_prompt`.
+
+    The parser is tolerant of common variants: UTF-8 BOM, ``\\r\\n`` line
+    endings, blank lines between cues, missing or duplicated sequence
+    numbers, and ``,``/``.`` millisecond separators.
+    """
+    if srt_text is None:
+        return [], ''
+    # Strip BOM and normalise newlines.
+    if srt_text.startswith('\ufeff'):
+        srt_text = srt_text[1:]
+    srt_text = srt_text.replace('\r\n', '\n').replace('\r', '\n')
+
+    time_re = re.compile(
+        r'(\d{1,2}:\d{2}:\d{2}[,\.:]\d{1,3})\s*-->\s*(\d{1,2}:\d{2}:\d{2}[,\.:]\d{1,3})'
+    )
+
+    lines = srt_text.split('\n')
+    sentences = []
+    i = 0
+    n = len(lines)
+    while i < n:
+        # Skip empty lines and stray sequence-number lines.
+        while i < n and not time_re.search(lines[i]):
+            i += 1
+        if i >= n:
+            break
+        m = time_re.search(lines[i])
+        try:
+            start_ms = _srt_time_to_ms(m.group(1))
+            end_ms = _srt_time_to_ms(m.group(2))
+        except ValueError:
+            i += 1
+            continue
+        i += 1
+        text_parts = []
+        while i < n and lines[i].strip() != '' and not time_re.search(lines[i]):
+            text_parts.append(lines[i].rstrip())
+            i += 1
+        text = '\n'.join(text_parts).strip()
+        if end_ms <= start_ms:
+            # Skip degenerate cues but do not abort.
+            continue
+        sentences.append({
+            'text': [text] if text else [''],
+            'timestamp': [[start_ms, end_ms]],
+            'start': start_ms,
+            'end': end_ms,
+            'raw_text': text,
+        })
+
+    normalized_lines = []
+    for idx, sent in enumerate(sentences):
+        normalized_lines.append(str(idx))
+        normalized_lines.append("{} --> {}".format(
+            time_convert(sent['start']), time_convert(sent['end'])))
+        normalized_lines.append(sent['raw_text'])
+        normalized_lines.append('')
+    normalized_srt = '\n'.join(normalized_lines)
+    return sentences, normalized_srt
+
