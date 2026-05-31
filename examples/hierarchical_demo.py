@@ -65,8 +65,10 @@ from llm.hierarchical import (  # noqa: E402
     parse_card,
     format_cards_for_reduce,
     hierarchical_llm_inference,
+    movie_llm_inference,
     MAP_SYSTEM_PROMPT,
     REDUCE_SYSTEM_PROMPT,
+    FOLD_SYSTEM_PROMPT,
 )
 
 # ---------------------------------------------------------------------------
@@ -341,11 +343,26 @@ def _mock_llm_caller(system_content, user_content, srt_text, model, apikey):
             "summary": "（Mock）本段覆盖 {} → {}".format(s, e),
         }
         return json.dumps(card, ensure_ascii=False)
-    # Reduce stage: return two clip lines using real timestamps from the SRT.
+    if system_content == FOLD_SYSTEM_PROMPT:
+        # Fold stage: collapse a group of cards into one act-level card,
+        # spanning the first/last range found in the payload.
+        starts = _re.findall(r'range=\[(\d{2}:\d{2}:\d{2},\d{3})-', srt_text)
+        ends = _re.findall(r'-(\d{2}:\d{2}:\d{2},\d{3})\]', srt_text)
+        s = starts[0] if starts else "00:00:00,000"
+        e = ends[-1] if ends else "00:00:01,000"
+        card = {
+            "range": "[{}-{}]".format(s, e),
+            "role": "climax",
+            "intensity": 5,
+            "summary": "（Mock）整幕摘要 {} → {}".format(s, e),
+        }
+        return json.dumps(card, ensure_ascii=False)
+    # Reduce stage: return clip lines using real timestamps from the SRT.
     return (
         "1. [00:00:13,800-00:00:48,400] 技术介绍：FunClip 架构与 LLM 智能裁剪流程\n"
         "2. [00:01:35,200-00:02:25,400] 核心原理：分层 Map-Reduce 选片机制详解\n"
-        "3. [00:03:38,900-00:04:17,000] 效果对比与总结"
+        "3. [00:03:38,900-00:04:17,000] 效果对比与总结\n\n"
+        "剧情脉络：（Mock）开端介绍 → 中段原理转折 → 高潮总结。"
     )
 
 
@@ -378,7 +395,8 @@ def _real_llm_caller(model, apikey):
 # ---------------------------------------------------------------------------
 # Main demo
 # ---------------------------------------------------------------------------
-def run_demo(model=None, apikey=None, show_cards=False, window=25, overlap=4):
+def run_demo(model=None, apikey=None, show_cards=False, window=25, overlap=4,
+             movie=False):
     """Execute the full hierarchical clipping demo.
 
     Parameters
@@ -390,12 +408,18 @@ def run_demo(model=None, apikey=None, show_cards=False, window=25, overlap=4):
     window, overlap : int
         Chunk size knobs. Defaults are small so the demo runs quickly on
         the 60-cue sample SRT.
+    movie : bool
+        Use the plot-aware Map-Fold-Reduce :func:`movie_llm_inference`
+        pipeline (identifies main plot and turning points) instead of the
+        plain hierarchical Map-Reduce.
     """
     sep = "-" * 68
     use_mock = model is None
+    mode_name = "Movie (plot-aware Map-Fold-Reduce)" if movie else "Hierarchical (Map-Reduce)"
 
     print(sep)
     print("FunClip — Hierarchical LLM Clipping Demo")
+    print("Mode: {}".format(mode_name))
     print("LLM: {}".format("Mock (no API key)" if use_mock else model))
     print("Chunk window={}, overlap={}".format(window, overlap))
     print(sep)
@@ -428,7 +452,7 @@ def run_demo(model=None, apikey=None, show_cards=False, window=25, overlap=4):
     else:
         llm_caller = _real_llm_caller(model, apikey)
 
-    llm_result = hierarchical_llm_inference(
+    llm_result = (movie_llm_inference if movie else hierarchical_llm_inference)(
         srt_text=normalized_srt,
         model=model or "mock",
         apikey=apikey or "",
@@ -526,6 +550,11 @@ def main():
         "--overlap", type=int, default=4,
         help="Overlap between consecutive chunks in cues (default: 4).",
     )
+    parser.add_argument(
+        "--movie", action="store_true",
+        help="Use the plot-aware Map-Fold-Reduce pipeline (identifies main "
+             "plot and turning points) instead of plain hierarchical mode.",
+    )
     args = parser.parse_args()
 
     if args.model and not args.apikey and not args.model.startswith("g4f"):
@@ -538,6 +567,7 @@ def main():
         show_cards=args.show_cards,
         window=args.window,
         overlap=args.overlap,
+        movie=args.movie,
     )
 
 

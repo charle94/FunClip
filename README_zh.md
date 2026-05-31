@@ -84,6 +84,34 @@ python funclip/videoclipper.py --stage 3 \
 
 或在 Gradio 界面中将「📐 Prompt 模式」切换为「分层叙事(长视频) | Hierarchical」即可。
 
+### 🎬 电影情节/转折模式（超长电影字幕推荐）
+
+对于一两个小时的电影，字幕往往有上千条，即使分层叙事也会因为「叙事摘要卡」太多而让 Reduce 阶段重新陷入注意力稀释，难以抓住主线与关键转折。FunClip 在分层架构之上再加一层，新增 **电影情节/转折 | Movie** 模式，采用三阶段 **Map → Fold → Reduce** 流水线，专门用于识别主要情节与转折：
+
+- **Map 阶段**：与分层模式一致，将 SRT 切块并行生成「叙事摘要卡」（时间范围、叙事角色、情绪强度、摘要）。
+- **Fold（折叠）阶段**：当摘要卡数量超过阈值（默认 40 张）时，把相邻的若干张卡递归归纳为更高层次的「整幕卡」，将卡片数量压缩到 Reduce 阶段可掌控的范围；某次折叠调用失败时会自动退化为确定性合并，保证流程不中断。
+- **转折识别**：在送入 Reduce 之前，程序会用确定性规则（`turn`/`climax` 角色、情绪强度跳变与局部峰值）先标注出主要转折点，并作为「关键转折提示」拼接到 Reduce 输入开头。
+- **Reduce 阶段**：使用面向电影的提示词，要求模型先梳理主线剧情与关键转折，再据此选出 3-8 个片段，并在片段之后附上「剧情脉络」说明。
+
+使用方式与其他模式一致，只需将 `--prompt_mode` 改为 `movie`：
+
+```bash
+python funclip/videoclipper.py --stage 3 \
+    --file path/to/movie.mp4 \
+    --srt_input path/to/subtitles.srt \
+    --llm_model deepseek-chat --apikey <your-key> \
+    --prompt_mode movie \
+    --output_dir ./output
+```
+
+或在 Gradio 界面中将「📐 Prompt 模式」切换为「电影情节/转折(超长字幕) | Movie」即可。
+
+无需 API Key 体验电影模式（含 Fold 折叠演示）：
+
+```bash
+python examples/hierarchical_demo.py --movie
+```
+
 想要快速了解该流程的运作方式，可运行无需 API Key 的演示脚本：
 
 ```bash

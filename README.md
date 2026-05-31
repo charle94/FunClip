@@ -82,6 +82,34 @@ python funclip/videoclipper.py --stage 3 \
 
 In the Gradio UI, switch the "📐 Prompt Mode" radio to "分层叙事(长视频) | Hierarchical".
 
+### 🎬 Movie plot & turning-point mode (recommended for long movie subtitles)
+
+A 1–2 hour movie can have thousands of cues. Even hierarchical mode can drown the Reduce stage in too many "narrative cards", losing the main storyline and key turning points. FunClip adds a **Movie** prompt mode on top of the hierarchical architecture — a three-pass **Map → Fold → Reduce** pipeline purpose-built to surface the main plot and turning points:
+
+- **Map**: same as hierarchical — chunk the SRT and produce per-chunk narrative cards `{range, role, intensity, summary}`.
+- **Fold**: when the number of cards exceeds a threshold (default 40), recursively summarise groups of adjacent cards into coarser *act-level* cards, compressing the card count to something the Reduce stage can keep in view. If a fold call fails it degrades to a deterministic merge so the pipeline never stalls.
+- **Turning-point detection**: before Reduce, a deterministic pass (roles `turn`/`climax`, intensity jumps and local peaks) flags the main turning points and prepends them as a "key turning points" hint to the Reduce input.
+- **Reduce**: a movie-oriented prompt asks the model to first lay out the main storyline and turning points, then pick 3–8 segments and append a "剧情脉络 (plot outline)" summary.
+
+Usage is identical to the other modes, just set `--prompt_mode movie`:
+
+```bash
+python funclip/videoclipper.py --stage 3 \
+    --file path/to/movie.mp4 \
+    --srt_input path/to/subtitles.srt \
+    --llm_model deepseek-chat --apikey <your-key> \
+    --prompt_mode movie \
+    --output_dir ./output
+```
+
+In the Gradio UI, switch the "📐 Prompt Mode" radio to "电影情节/转折(超长字幕) | Movie".
+
+Try the movie pipeline (including the Fold stage) without an API key:
+
+```bash
+python examples/hierarchical_demo.py --movie
+```
+
 To see the pipeline in action without an API key, run the bundled demo script:
 
 ```bash

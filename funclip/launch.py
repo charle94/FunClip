@@ -16,8 +16,11 @@ from llm.g4f_openai_api import g4f_openai_call
 from llm.demo_prompt import short_video_prompt_system, short_video_prompt_user
 from llm.hierarchical import (
     hierarchical_llm_inference,
+    movie_llm_inference,
     REDUCE_SYSTEM_PROMPT as hierarchical_system_prompt,
     REDUCE_USER_PROMPT as hierarchical_user_prompt,
+    MOVIE_REDUCE_SYSTEM_PROMPT as movie_system_prompt,
+    MOVIE_REDUCE_USER_PROMPT as movie_user_prompt,
 )
 from utils.trans_utils import extract_timestamps
 from introduction import top_md_1, top_md_3, top_md_4
@@ -156,6 +159,8 @@ if __name__ == "__main__":
             # show, because for short inputs the orchestrator falls back to a
             # single-shot call using exactly this prompt pair.
             return hierarchical_system_prompt, hierarchical_user_prompt
+        if mode == 'movie':
+            return movie_system_prompt, movie_user_prompt
         # general / default mode keeps the previous wording.
         general_system = ("你是一个视频srt字幕分析剪辑器，输入视频的srt字幕，"
                 "分析其中的精彩且尽可能连续的片段并裁剪出来，输出四条以内的片段，将片段中在时间上连续的多个句子及它们的时间戳合并为一条，"
@@ -187,6 +192,15 @@ if __name__ == "__main__":
         """
         if prompt_mode == 'hierarchical':
             return hierarchical_llm_inference(
+                srt_text=srt_text,
+                model=model,
+                apikey=apikey,
+                llm_caller=llm_inference,
+                reduce_system_prompt=system_content,
+                reduce_user_prompt=user_content,
+            )
+        if prompt_mode == 'movie':
+            return movie_llm_inference(
                 srt_text=srt_text,
                 model=model,
                 apikey=apikey,
@@ -279,9 +293,10 @@ if __name__ == "__main__":
                         prompt_mode = gr.Radio(
                             choices=[("通用挑选 | General", "general"),
                                      ("短视频叙事 | Short Video", "short_video"),
-                                     ("分层叙事(长视频) | Hierarchical", "hierarchical")],
+                                     ("分层叙事(长视频) | Hierarchical", "hierarchical"),
+                                     ("电影情节/转折(超长字幕) | Movie", "movie")],
                             value="general",
-                            label="📐 Prompt 模式 | Prompt Mode (短视频模式按情节/高潮/转折切分；分层模式适合超长字幕)")
+                            label="📐 Prompt 模式 | Prompt Mode (短视频模式按情节/高潮/转折切分；分层模式适合超长字幕；电影模式识别主要情节与转折)")
                         prompt_head = gr.Textbox(label="Prompt System (按需更改，最好不要变动主体和要求)", value=("你是一个视频srt字幕分析剪辑器，输入视频的srt字幕，"
                                 "分析其中的精彩且尽可能连续的片段并裁剪出来，输出四条以内的片段，将片段中在时间上连续的多个句子及它们的时间戳合并为一条，"
                                 "注意确保文字与时间戳的正确匹配。输出需严格按照如下格式：1. [开始时间-结束时间] 文本，注意其中的连接符是“-”"))

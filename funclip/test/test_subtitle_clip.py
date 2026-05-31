@@ -24,8 +24,15 @@ from llm.hierarchical import (  # noqa: E402
     parse_card,
     format_cards_for_reduce,
     hierarchical_llm_inference,
+    movie_llm_inference,
+    detect_turning_points,
+    fold_cards,
+    format_plot_map,
+    _parse_range_ms,
     MAP_SYSTEM_PROMPT,
     REDUCE_SYSTEM_PROMPT,
+    FOLD_SYSTEM_PROMPT,
+    MOVIE_REDUCE_SYSTEM_PROMPT,
 )
 
 
@@ -115,20 +122,22 @@ class ExtractTimestampsTests(unittest.TestCase):
         ])
 
 
+def _fmt(ms):
+    """Format milliseconds as an SRT ``HH:MM:SS,mmm`` timestamp."""
+    h = ms // 3600000
+    mi = (ms // 60000) % 60
+    sec = (ms // 1000) % 60
+    mm = ms % 1000
+    return "{:02d}:{:02d}:{:02d},{:03d}".format(h, mi, sec, mm)
+
+
 def _make_srt(n_cues, start_ms=0, dur=2000, gap=200):
     """Build a synthetic SRT string with ``n_cues`` cues for chunking tests."""
     out = []
     t = start_ms
     for i in range(n_cues):
         s, e = t, t + dur
-        # HH:MM:SS,mmm
-        def fmt(ms):
-            h = ms // 3600000
-            mi = (ms // 60000) % 60
-            sec = (ms // 1000) % 60
-            mm = ms % 1000
-            return "{:02d}:{:02d}:{:02d},{:03d}".format(h, mi, sec, mm)
-        out.append("{}\n{} --> {}\nline {}\n".format(i, fmt(s), fmt(e), i))
+        out.append("{}\n{} --> {}\nline {}\n".format(i, _fmt(s), _fmt(e), i))
         t = e + gap
     return "\n".join(out)
 
@@ -324,6 +333,194 @@ class FormatCardsForReduceTests(unittest.TestCase):
         self.assertIn('intensity=5', text)
         self.assertIn('A', text)
         self.assertIn('B', text)
+
+
+class TurningPointTests(unittest.TestCase):
+
+    def _cards(self, specs):
+        cards = []
+        for i, (role, inten) in enumerate(specs):
+            s = i * 10000
+            e = s + 9000
+            cards.append({
+                'range': '[{}-{}]'.format(_fmt(s), _fmt(e)),
+                'role': role, 'intensity': inten, 'summary': 's{}'.format(i),
+            })
+        return cards
+
+    def test_role_turn_and_climax_always_flagged(self):
+        cards = self._cards([('setup', 2), ('turn', 3), ('setup', 2),
+                             ('climax', 3)])
+        self.assertEqual(detect_turning_points(cards), [1, 3])
+
+    def test_sharp_intensity_rise_flagged(self):
+        # 2 -> 4 is a +2 escalation; should be a turning point.
+        cards = self._cards([('setup', 2), ('rising', 4), ('setup', 2)])
+        self.assertIn(1, detect_turning_points(cards))
+
+    def test_local_max_high_intensity_kept(self):
+        # A local maximum at intensity 5 must never be missed (global climax).
+        cards = self._cards([('rising', 4), ('rising', 5), ('rising', 4)])
+        self.assertIn(1, detect_turning_points(cards))
+
+    def test_flat_low_intensity_has_no_turning_points(self):
+        cards = self._cards([('setup', 2), ('setup', 2), ('setup', 2)])
+        self.assertEqual(detect_turning_points(cards), [])
+
+    def test_handles_bad_intensity_values(self):
+        cards = [
+            {'range': '[00:00:00,000-00:00:09,000]', 'role': 'setup',
+             'intensity': 'bad', 'summary': ''},
+            {'range': '[00:00:10,000-00:00:19,000]', 'role': 'turn',
+             'intensity': None, 'summary': ''},
+        ]
+        # Should not raise; the explicit 'turn' role is still flagged.
+        self.assertIn(1, detect_turning_points(cards))
+
+
+class ParseRangeTests(unittest.TestCase):
+
+    def test_parses_bracketed_range(self):
+        self.assertEqual(
+            _parse_range_ms('[00:01:02,500-00:01:10,000]'), (62500, 70000))
+
+    def test_tolerates_dot_separator(self):
+        self.assertEqual(
+            _parse_range_ms('00:00:01.250 - 00:00:02.000'), (1250, 2000))
+
+    def test_returns_none_for_garbage(self):
+        self.assertIsNone(_parse_range_ms('not a range'))
+        self.assertIsNone(_parse_range_ms(''))
+
+
+class FoldCardsTests(unittest.TestCase):
+
+    def _many(self, n):
+        cards = []
+        for i in range(n):
+            s = i * 10000
+            e = s + 9000
+            cards.append({
+                'range': '[{}-{}]'.format(_fmt(s), _fmt(e)),
+                'role': 'setup', 'intensity': 3, 'summary': 's{}'.format(i),
+            })
+        return cards
+
+    def test_no_fold_when_within_limit(self):
+        cards = self._many(5)
+        self.assertEqual(fold_cards(cards, max_cards=10), cards)
+
+    def test_deterministic_fold_preserves_span_and_order(self):
+        cards = self._many(30)
+        out = fold_cards(cards, llm_caller=None, max_cards=6, group_size=5)
+        self.assertLessEqual(len(out), 6)
+        # The folded list spans the same overall time range.
+        self.assertEqual(_parse_range_ms(out[0]['range'])[0], 0)
+        self.assertEqual(_parse_range_ms(out[-1]['range'])[1],
+                         _parse_range_ms(cards[-1]['range'])[1])
+
+    def test_llm_fold_invoked_per_group(self):
+        cards = self._many(20)
+        calls = {'n': 0}
+
+        def caller(system, user, srt, model, apikey):
+            self.assertEqual(system, FOLD_SYSTEM_PROMPT)
+            calls['n'] += 1
+            return ('{"range":"[00:00:00,000-00:00:09,000]","role":"climax",'
+                    '"intensity":5,"summary":"act"}')
+
+        out = fold_cards(cards, llm_caller=caller, model='m', apikey='k',
+                         max_cards=4, group_size=5, max_workers=1)
+        self.assertLessEqual(len(out), 4)
+        self.assertGreater(calls['n'], 0)
+
+    def test_fold_failure_falls_back_to_merge(self):
+        cards = self._many(12)
+
+        def caller(system, user, srt, model, apikey):
+            raise RuntimeError("fold timeout")
+
+        out = fold_cards(cards, llm_caller=caller, model='m', apikey='k',
+                         max_cards=3, group_size=5, max_workers=1)
+        # Deterministic merge keeps it progressing despite every call failing.
+        self.assertLessEqual(len(out), 3)
+        self.assertEqual(_parse_range_ms(out[0]['range'])[0], 0)
+
+
+class FormatPlotMapTests(unittest.TestCase):
+
+    def test_includes_turning_point_header_and_cards(self):
+        cards = [
+            {'range': '[00:00:00,000-00:00:30,000]', 'role': 'setup',
+             'intensity': 2, 'summary': 'A'},
+            {'range': '[00:00:30,000-00:01:00,000]', 'role': 'climax',
+             'intensity': 5, 'summary': 'B'},
+        ]
+        text = format_plot_map(cards, detect_turning_points(cards))
+        self.assertIn('关键转折提示', text)
+        self.assertIn('卡片2', text)
+        self.assertIn('A', text)
+        self.assertIn('B', text)
+
+    def test_header_present_even_without_turning_points(self):
+        cards = [
+            {'range': '[00:00:00,000-00:00:30,000]', 'role': 'setup',
+             'intensity': 2, 'summary': 'A'},
+        ]
+        text = format_plot_map(cards, [])
+        self.assertIn('关键转折提示', text)
+        self.assertIn('未检测到明显转折', text)
+
+
+class MovieInferenceTests(unittest.TestCase):
+
+    def _caller(self, log):
+        def caller(system, user, srt, model, apikey):
+            log.append({'system': system, 'srt': srt})
+            if system == MAP_SYSTEM_PROMPT:
+                m = re.search(r'(\d{2}:\d{2}:\d{2},\d{3}) -->', srt)
+                start = m.group(1) if m else "00:00:00,000"
+                m2 = re.findall(r'--> (\d{2}:\d{2}:\d{2},\d{3})', srt)
+                end = m2[-1] if m2 else "00:00:00,000"
+                return ('{"range":"[%s-%s]","role":"climax",'
+                        '"intensity":5,"summary":"c"}' % (start, end))
+            if system == FOLD_SYSTEM_PROMPT:
+                starts = re.findall(r'range=\[(\d{2}:\d{2}:\d{2},\d{3})-', srt)
+                ends = re.findall(r'-(\d{2}:\d{2}:\d{2},\d{3})\]', srt)
+                s = starts[0] if starts else "00:00:00,000"
+                e = ends[-1] if ends else "00:00:00,000"
+                return ('{"range":"[%s-%s]","role":"climax",'
+                        '"intensity":5,"summary":"act"}' % (s, e))
+            return ("1. [00:00:00,000-00:00:10,000] 开端\n"
+                    "2. [00:00:20,000-00:00:30,000] 高潮")
+        return caller
+
+    def test_movie_uses_plot_aware_reduce(self):
+        log = []
+        out = movie_llm_inference(
+            srt_text=_make_srt(120), model='m', apikey='k',
+            llm_caller=self._caller(log), max_workers=1,
+        )
+        reduce_calls = [c for c in log
+                        if c['system'] == MOVIE_REDUCE_SYSTEM_PROMPT]
+        self.assertEqual(len(reduce_calls), 1)
+        # Reduce payload must carry the turning-point header.
+        self.assertIn('关键转折提示', reduce_calls[0]['srt'])
+        self.assertEqual(extract_timestamps(out), [[0, 10000], [20000, 30000]])
+
+    def test_movie_folds_when_many_cards(self):
+        log = []
+        # 2000 cues -> dozens of chunks -> more than the 40-card fold limit.
+        movie_llm_inference(
+            srt_text=_make_srt(2000), model='m', apikey='k',
+            llm_caller=self._caller(log), max_workers=1,
+        )
+        fold_calls = [c for c in log if c['system'] == FOLD_SYSTEM_PROMPT]
+        reduce_calls = [c for c in log
+                        if c['system'] == MOVIE_REDUCE_SYSTEM_PROMPT]
+        self.assertGreater(len(fold_calls), 0)
+        # The reduce stage sees at most the fold limit worth of cards.
+        self.assertLessEqual(reduce_calls[0]['srt'].count('摘要:'), 40)
 
 
 if __name__ == '__main__':
