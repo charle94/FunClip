@@ -297,7 +297,7 @@ def _parse_range_ms(range_str: str) -> Optional[Tuple[int, int]]:
         return None
 
     def _to_ms(t: str) -> int:
-        t = t.replace('.', ',').replace(':', ',', 0)
+        t = t.replace('.', ',')
         parts = re.split(r'[:,]', t)
         h, mi, s, ms = (parts + ['0', '0', '0', '0'])[:4]
         ms = ms.zfill(3)

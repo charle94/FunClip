@@ -426,13 +426,22 @@ class FoldCardsTests(unittest.TestCase):
         def caller(system, user, srt, model, apikey):
             self.assertEqual(system, FOLD_SYSTEM_PROMPT)
             calls['n'] += 1
-            return ('{"range":"[00:00:00,000-00:00:09,000]","role":"climax",'
-                    '"intensity":5,"summary":"act"}')
+            # Echo each group's real span so folding preserves chronology.
+            starts = re.findall(r'range=\[(\d{2}:\d{2}:\d{2},\d{3})-', srt)
+            ends = re.findall(r'-(\d{2}:\d{2}:\d{2},\d{3})\]', srt)
+            s = starts[0] if starts else "00:00:00,000"
+            e = ends[-1] if ends else "00:00:00,000"
+            return ('{"range":"[%s-%s]","role":"climax",'
+                    '"intensity":5,"summary":"act"}' % (s, e))
 
         out = fold_cards(cards, llm_caller=caller, model='m', apikey='k',
                          max_cards=4, group_size=5, max_workers=1)
         self.assertLessEqual(len(out), 4)
         self.assertGreater(calls['n'], 0)
+        # Folded cards stay in chronological order and span the original range.
+        self.assertEqual(_parse_range_ms(out[0]['range'])[0], 0)
+        self.assertEqual(_parse_range_ms(out[-1]['range'])[1],
+                         _parse_range_ms(cards[-1]['range'])[1])
 
     def test_fold_failure_falls_back_to_merge(self):
         cards = self._many(12)
