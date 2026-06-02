@@ -442,11 +442,12 @@ def get_parser():
     parser.add_argument(
         "--prompt_mode",
         type=str,
-        choices=("general", "short_video", "hierarchical"),
+        choices=("general", "short_video", "hierarchical", "movie"),
         default="short_video",
         help="LLM prompt mode for stage 3: 'general' (simple), "
              "'short_video' (narrative structure), "
-             "'hierarchical' (map-reduce for long subtitles)",
+             "'hierarchical' (map-reduce for long subtitles), "
+             "'movie' (plot-aware map-fold-reduce for long movie subtitles)",
     )
     return parser
 
@@ -593,6 +594,22 @@ def _run_stage3(file, mode, srt_input, output_dir, output_file, llm_model, apike
             llm_caller=_hierarchical_caller,
             reduce_system_prompt=REDUCE_SYSTEM_PROMPT,
             reduce_user_prompt=REDUCE_USER_PROMPT,
+        )
+    elif prompt_mode == 'movie':
+        from llm.hierarchical import (
+            movie_llm_inference,
+            MOVIE_REDUCE_SYSTEM_PROMPT,
+            MOVIE_REDUCE_USER_PROMPT,
+        )
+        def _movie_caller(system, user, srt, model, apikey):
+            return _run_llm_for_clip(model, apikey, system, user, srt)
+        llm_result = movie_llm_inference(
+            srt_text=res_srt,
+            model=llm_model,
+            apikey=apikey,
+            llm_caller=_movie_caller,
+            reduce_system_prompt=MOVIE_REDUCE_SYSTEM_PROMPT,
+            reduce_user_prompt=MOVIE_REDUCE_USER_PROMPT,
         )
     else:
         if prompt_mode == 'short_video':
